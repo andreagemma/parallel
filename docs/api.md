@@ -14,7 +14,7 @@ when the block exits:
 
 ```python
 with Parallel(num_cpus=2, engine=Engine.MULTITHREADING) as runtime:
-	results = runtime.map_list(fn, tasks)
+    results = runtime.map_list(fn, tasks)
 ```
 
 ### `Engine`
@@ -81,7 +81,7 @@ scoped use with a context manager:
 
 ```python
 with Parallel.session(num_cpus=2, engine="threading") as runtime:
-	results = runtime.map_list(fn, tasks)
+    results = runtime.map_list(fn, tasks)
 ```
 
 ### `Parallel.shutdown`

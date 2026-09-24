@@ -239,9 +239,11 @@ class Parallel:
                     if ray.is_initialized():
                         new_num_cpus = int(ray.cluster_resources().get("CPU", self._num_cpus))
                         if new_num_cpus > self._num_cpus:
-                            self._log.warning(f"Ray cluster has more CPUs ({new_num_cpus}) than requested ({self._num_cpus}). Adjusting accordingly.")                            
+                            self._log.warning(
+                                f"Ray cluster has more CPUs ({new_num_cpus}) than requested ({self._num_cpus}). Adjusting accordingly."
+                            )
                         else:
-                            self._num_cpus = new_num_cpus                        
+                            self._num_cpus = new_num_cpus
                         self._ray_initialized = True
                         self._initialized = True
                         _ray_runtime_users += 1
@@ -483,6 +485,7 @@ class Parallel:
                 yield value
 
         elif engine_value == Engine.MULTITHREADING and num_cpus > 1:
+
             def calculate(*args: Any, **kwargs: Any) -> Any:
                 """Invoke `fn` for a single chunk of tasks on a worker thread."""
                 return fn(*args, **kwargs)
@@ -503,7 +506,9 @@ class Parallel:
                 return fn(*args, **kwargs)
 
             self._log.debug(f"Run task on engine Joblib with {num_cpus} workers.")
-            results: Any = self._joblib_engine(joblib.delayed(calculate)(tasks=chunk, **kwargs) for chunk in pair_chunks)
+            results: Any = self._joblib_engine(
+                joblib.delayed(calculate)(tasks=chunk, **kwargs) for chunk in pair_chunks
+            )
             for value in results:
                 yield value
         else:

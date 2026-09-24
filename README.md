@@ -65,7 +65,7 @@ For scoped execution, use the runtime as a context manager:
 
 ```python
 with Parallel(num_cpus=2, engine=Engine.MULTITHREADING) as runtime:
-  results = runtime.map_list(double, tasks)
+    results = runtime.map_list(double, tasks)
 ```
 
 ## Engines

@@ -84,11 +84,12 @@ def test_two_ray_runtime_instances() -> None:
     try:
         assert first_runtime._parallel_engine is Engine.RAY
         assert second_runtime._parallel_engine is Engine.RAY
-        assert first_runtime.map_list(_double, [{"value": 1}]*10000) == [2]*10000
-        assert second_runtime.map_list(_double, [{"value": 2}]*10000) == [4]*10000
+        assert first_runtime.map_list(_double, [{"value": 1}] * 10000) == [2] * 10000
+        assert second_runtime.map_list(_double, [{"value": 2}] * 10000) == [4] * 10000
     finally:
         second_runtime.shutdown(force=True)
         first_runtime.shutdown(force=True)
+
 
 def test_two_dask_runtime_instances() -> None:
     pytest.importorskip("dask")
@@ -97,11 +98,12 @@ def test_two_dask_runtime_instances() -> None:
     try:
         assert first_runtime._parallel_engine is Engine.DASK
         assert second_runtime._parallel_engine is Engine.DASK
-        assert first_runtime.map_list(_double, [{"value": 1}]*10000) == [2]*10000
-        assert second_runtime.map_list(_double, [{"value": 2}]*10000) == [4]*10000
+        assert first_runtime.map_list(_double, [{"value": 1}] * 10000) == [2] * 10000
+        assert second_runtime.map_list(_double, [{"value": 2}] * 10000) == [4] * 10000
     finally:
         second_runtime.shutdown(force=True)
         first_runtime.shutdown(force=True)
+
 
 def test_two_joblib_runtime_instances() -> None:
     pytest.importorskip("joblib")
@@ -110,11 +112,12 @@ def test_two_joblib_runtime_instances() -> None:
     try:
         assert first_runtime._parallel_engine is Engine.JOBLIB
         assert second_runtime._parallel_engine is Engine.JOBLIB
-        assert first_runtime.map_list(_double, [{"value": 1}]*10000) == [2]*10000
-        assert second_runtime.map_list(_double, [{"value": 2}]*10000) == [4]*10000
+        assert first_runtime.map_list(_double, [{"value": 1}] * 10000) == [2] * 10000
+        assert second_runtime.map_list(_double, [{"value": 2}] * 10000) == [4] * 10000
     finally:
         second_runtime.shutdown(force=True)
         first_runtime.shutdown(force=True)
+
 
 def test_two_multithreading_runtime_instances() -> None:
     pytest.importorskip("threading")
@@ -123,11 +126,12 @@ def test_two_multithreading_runtime_instances() -> None:
     try:
         assert first_runtime._parallel_engine is Engine.MULTITHREADING
         assert second_runtime._parallel_engine is Engine.MULTITHREADING
-        assert first_runtime.map_list(_double, [{"value": 1}]*10000) == [2]*10000
-        assert second_runtime.map_list(_double, [{"value": 2}]*10000) == [4]*10000
+        assert first_runtime.map_list(_double, [{"value": 1}] * 10000) == [2] * 10000
+        assert second_runtime.map_list(_double, [{"value": 2}] * 10000) == [4] * 10000
     finally:
         second_runtime.shutdown(force=True)
         first_runtime.shutdown(force=True)
+
 
 def test_two_none_runtime_instances() -> None:
     first_runtime = Parallel(num_cpus=2, engine=Engine.NONE)
@@ -135,11 +139,12 @@ def test_two_none_runtime_instances() -> None:
     try:
         assert first_runtime._parallel_engine is Engine.NONE
         assert second_runtime._parallel_engine is Engine.NONE
-        assert first_runtime.map_list(_double, [{"value": 1}]*10000) == [2]*10000
-        assert second_runtime.map_list(_double, [{"value": 2}]*10000) == [4]*10000
+        assert first_runtime.map_list(_double, [{"value": 1}] * 10000) == [2] * 10000
+        assert second_runtime.map_list(_double, [{"value": 2}] * 10000) == [4] * 10000
     finally:
         second_runtime.shutdown(force=True)
         first_runtime.shutdown(force=True)
+
 
 def test_two_dask_multithreading_runtime_instances() -> None:
     first_runtime = Parallel(num_cpus=2, engine=Engine.DASK_MULTITHREADING)
@@ -147,11 +152,12 @@ def test_two_dask_multithreading_runtime_instances() -> None:
     try:
         assert first_runtime._parallel_engine is Engine.DASK_MULTITHREADING
         assert second_runtime._parallel_engine is Engine.DASK_MULTITHREADING
-        assert first_runtime.map_list(_double, [{"value": 1}]*10000) == [2]*10000
-        assert second_runtime.map_list(_double, [{"value": 2}]*10000) == [4]*10000
+        assert first_runtime.map_list(_double, [{"value": 1}] * 10000) == [2] * 10000
+        assert second_runtime.map_list(_double, [{"value": 2}] * 10000) == [4] * 10000
     finally:
         second_runtime.shutdown(force=True)
         first_runtime.shutdown(force=True)
+
 
 def test_session_context_manager_configures_and_shutdowns() -> None:
     with Parallel(num_cpus=2, engine=Engine.MULTITHREADING) as runtime:
