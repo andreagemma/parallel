@@ -120,7 +120,6 @@ def test_two_joblib_runtime_instances() -> None:
 
 
 def test_two_multithreading_runtime_instances() -> None:
-    pytest.importorskip("threading")
     first_runtime = Parallel(num_cpus=2, engine=Engine.MULTITHREADING)
     second_runtime = Parallel(num_cpus=20, engine=Engine.MULTITHREADING)
     try:
@@ -147,6 +146,7 @@ def test_two_none_runtime_instances() -> None:
 
 
 def test_two_dask_multithreading_runtime_instances() -> None:
+    pytest.importorskip("dask")
     first_runtime = Parallel(num_cpus=2, engine=Engine.DASK_MULTITHREADING)
     second_runtime = Parallel(num_cpus=20, engine=Engine.DASK_MULTITHREADING)
     try:
