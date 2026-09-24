@@ -41,6 +41,6 @@ jobs:
       - name: Compile package
         run: python -m compileall -q src
       - name: Test
-        run: python -m pytest --cov=serializer --cov-report=term-missing
+        run: python -m pytest --cov=parallel --cov-report=term-missing
       - name: Check installed dependencies
         run: python -m pip check

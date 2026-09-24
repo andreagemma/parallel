@@ -64,11 +64,11 @@ jobs:
               tag = input_version
               source = "workflow input"
           else:
-              version_file = Path("src/serializer/_version.py")
+              version_file = Path("src/parallel/_version.py")
               if not version_file.exists():
                   raise SystemExit(f"Version file not found: {version_file}")
 
-              spec = importlib.util.spec_from_file_location("serializer._version", version_file)
+              spec = importlib.util.spec_from_file_location("parallel._version", version_file)
               if spec is None or spec.loader is None:
                   raise SystemExit("Unable to load version module")
               module = importlib.util.module_from_spec(spec)
