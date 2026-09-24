@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 - Documented the instance-based `Parallel` runtime API.
 - Added usage examples for `map_list`, `session`, and context-manager cleanup.
 - Clarified that each runtime instance owns its backend resources independently.
+- Bumped package/build version from `0.1.0` to `0.1.1`.
 
 ## 0.1.0 - 2026-09-23
 
