@@ -3,7 +3,14 @@
 ## `Parallel`
 
 `Parallel` is an instance-based runtime. Create one instance for each
-independent execution context; instances do not share engine state.
+independent execution context; instances do not share engine state. The
+constructor accepts `num_cpus` as an absolute count or relative fraction,
+`engine`, an optional logger, `debug_mode`, `error_mode`, and backend-specific
+keyword options.
+
+`debug_mode=True` forces sequential execution and debug logging. `error_mode`
+may be `"raise"` (raise a `RuntimeError`), `"ignore"` (discard failed work), or
+`"recover"` (the default, retry unfinished parallel work sequentially).
 
 ```python
 runtime = Parallel(num_cpus=2, engine=Engine.MULTITHREADING)
@@ -29,7 +36,8 @@ The public enum used to select the execution backend:
 - `Engine.RAY`
 
 `Engine.parse(value)` accepts either an `Engine` member or a string and
-normalizes it to the canonical enum value.
+normalizes it to the canonical enum value. `Engine.MULTITHREADING.value` is
+`"threading"`; names such as `"multithreading"` are accepted as aliases.
 
 ### `Parallel.configure`
 
@@ -51,6 +59,8 @@ runtime.map(fn, tasks, engine=None, n_workers=None, chunk_size=None, **kwargs)
 Splits `tasks` into chunks of `chunk_size` (defaults to an even split across
 workers) and calls `fn(tasks=chunk, **kwargs)` for each chunk using the active
 engine. Returns a generator that yields each chunk's result as it completes.
+`chunk_size` must be positive. With the default recovery mode, unfinished
+chunks are retried sequentially when parallel execution fails.
 
 ### `Parallel.apply`
 

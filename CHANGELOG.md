@@ -4,10 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.1.2 - 2026-10-27
+
+- Preserved the public `threading` engine value and the default CPU-count
+  behavior.
+- Documented the public runtime methods and debug/error handling options.
+- Fixed sequential recovery of unfinished parallel tasks and made `ignore`
+  consistently suppress task errors.
+- Rejected non-positive chunk sizes with a clear `ValueError`.
+
+## 0.1.1
+
 - Documented the instance-based `Parallel` runtime API.
 - Added usage examples for `map_list`, `session`, and context-manager cleanup.
 - Clarified that each runtime instance owns its backend resources independently.
-- Bumped package/build version from `0.1.0` to `0.1.1`.
 
 ## 0.1.0 - 2026-09-23
 

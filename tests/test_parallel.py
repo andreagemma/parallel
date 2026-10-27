@@ -1,3 +1,4 @@
+import logging
 import multiprocessing
 
 import pytest
@@ -32,13 +33,62 @@ def test_get_num_cpus_accepts_relative_fraction() -> None:
 def test_engine_parse_accepts_enum_and_string() -> None:
     assert Engine.parse(Engine.DASK) is Engine.DASK
     assert Engine.parse("ray") is Engine.RAY
+    assert Engine.parse("threading") is Engine.MULTITHREADING
+    assert Engine.MULTITHREADING.value == "threading"
     assert Engine.parse("DASK_MULTITHREADING") is Engine.DASK_MULTITHREADING
+
+
+def test_map_docstring_is_available() -> None:
+    assert Parallel.map.__doc__ is not None
+    assert "Yields:" in Parallel.map.__doc__
+
+
+def test_debug_mode_configures_debug_logging_and_sequential_engine() -> None:
+    runtime = Parallel(debug_mode=True)
+
+    assert runtime.is_debug_mode()
+    assert runtime._log is not None
+    assert runtime._log.level == logging.DEBUG
+    assert runtime._parallel_engine is Engine.NONE
 
 
 def test_map_sequential_without_engine() -> None:
     runtime = Parallel()
     results = list(runtime.map(_double, [{"value": 1}, {"value": 2}]))
     assert results == [[2, 4]]
+
+
+def test_map_rejects_non_positive_chunk_size() -> None:
+    runtime = Parallel()
+    with pytest.raises(ValueError, match="chunk_size must be greater than zero"):
+        list(runtime.map(_double, [{"value": 1}], chunk_size=0))
+
+
+def test_map_recovers_failed_parallel_chunk() -> None:
+    attempts = 0
+
+    def fail_once(tasks: list[dict]) -> list[int]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ValueError("temporary failure")
+        return [task["value"] for task in tasks]
+
+    runtime = Parallel(num_cpus=2, engine=Engine.MULTITHREADING, error_mode="recover")
+    try:
+        assert runtime.map_list(fail_once, [{"value": 1}, {"value": 2}], chunk_size=2) == [1, 2]
+    finally:
+        runtime.shutdown(force=True)
+
+    assert attempts == 2
+
+
+def test_map_ignore_swallows_sequential_task_errors() -> None:
+    def fail(tasks: list[dict]) -> list[int]:
+        raise ValueError("expected failure")
+
+    runtime = Parallel(num_cpus=1, engine=Engine.NONE, error_mode="ignore")
+    assert list(runtime.map(fail, [{"value": 1}])) == []
 
 
 def test_map_multithreading_engine() -> None:

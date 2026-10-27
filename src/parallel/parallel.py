@@ -8,9 +8,8 @@ import multiprocessing
 import os
 from collections.abc import Callable, Generator, Iterable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from serializer import Serializer
 
@@ -30,7 +29,18 @@ class Engine(str, Enum):
 
     @classmethod
     def parse(cls, value: Engine | str) -> Engine:
-        """Normalize an engine value from either an enum member or a string."""
+        """Parse an engine name into a supported member.
+
+        Args:
+            value: An engine member or a string naming an engine.
+
+        Returns:
+            The corresponding engine member.
+
+        Raises:
+            TypeError: If ``value`` is not an engine member or string.
+            ValueError: If the string does not name a supported engine.
+        """
         if isinstance(value, cls):
             return value
         if not isinstance(value, str):
@@ -62,12 +72,24 @@ class Parallel:
 
     def __init__(
         self,
-        num_cpus: int | None = None,
+        num_cpus: float | None = None,
         engine: Engine | str | None = None,
         log: logging.Logger | None = None,
+        debug_mode: bool = False,
+        error_mode: Literal["raise", "ignore", "recover"] = "recover",
         **kwargs: Any,
     ) -> None:
-        """Create a parallel runtime bound to a single process-local configuration."""
+        """Create a runtime with its own execution-engine configuration.
+
+        Args:
+            num_cpus: CPU count or relative CPU fraction to use.
+            engine: Execution engine to configure.
+            log: Optional logger for runtime messages.
+            debug_mode: If true, force sequential execution and debug logging.
+            error_mode: How to handle task failures: raise, ignore, or recover
+                unfinished work sequentially.
+            **kwargs: Backend-specific configuration options.
+        """
         self._ray_initialized = False
         self._dask_initialized = False
         self._dask_client: Any | None = None
@@ -80,16 +102,37 @@ class Parallel:
         self._joblib_engine: Any = None
         self._joblib_initialized = False
         self._initialized = False
-        self._log = self._get_logger(log)
-        if num_cpus is not None or engine is not None or kwargs:
+        self._log = log or self._get_logger(log)
+        self._debug_mode = debug_mode
+        self._error_mode = error_mode
+        self._recovering = False
+        if num_cpus is not None or engine is not None or kwargs or debug_mode:
             self.configure(num_cpus=num_cpus, engine=engine, log=log, **kwargs)
 
+    def is_debug_mode(self) -> bool:
+        """Return whether debug mode is enabled.
+
+        Returns:
+            ``True`` when this runtime is configured for debug mode.
+        """
+        return self._debug_mode
+
     def __enter__(self) -> Parallel:
-        """Return the configured runtime as a context manager target."""
+        """Return this runtime for use in a context manager.
+
+        Returns:
+            This runtime instance.
+        """
         return self
 
     def __exit__(self, exc_type: Any, exc_value: Any, traceback: Any) -> None:
-        """Shutdown the runtime when leaving a context block."""
+        """Shut down this runtime when leaving a context block.
+
+        Args:
+            exc_type: Exception type raised in the context, if any.
+            exc_value: Exception raised in the context, if any.
+            traceback: Traceback for the context exception, if any.
+        """
         self.shutdown(force=True)
 
     @staticmethod
@@ -97,14 +140,13 @@ class Parallel:
         """Resolve the number of CPUs to use from an absolute or relative value."""
         total_cpu_count = multiprocessing.cpu_count()
         if num_cpus is None:
-            num_cpus_final = int(total_cpu_count - 1)
+            num_cpus_final = total_cpu_count - 1
         elif isinstance(num_cpus, float):
             if 0 < num_cpus < 1:
                 num_cpus_final = int(num_cpus * total_cpu_count)
             elif -1 < num_cpus < 0:
                 num_cpus_final = int((1 + num_cpus) * total_cpu_count)
             else:
-                num_cpus = int(num_cpus)
                 num_cpus_final = int(num_cpus)
         elif isinstance(num_cpus, int):
             if num_cpus <= 0:
@@ -119,18 +161,17 @@ class Parallel:
         return num_cpus_final
 
     @staticmethod
-    def _get_num_min_cpus(num_cpus: float | None = None) -> int:
+    def _get_num_min_cpus(num_cpus: float | None = None, max_cpus: int | None = None) -> int:
         """Resolve the number of CPUs to use, bounded by the active engine's CPUs."""
-        max_cpus = multiprocessing.cpu_count()
+        max_cpus = max_cpus if max_cpus is not None else multiprocessing.cpu_count()
         if num_cpus is None:
-            num_cpus_final = int(max_cpus - 1)
+            num_cpus_final = max_cpus - 1
         elif isinstance(num_cpus, float):
             if 0 < num_cpus < 1:
                 num_cpus_final = int(num_cpus * max_cpus)
             elif -1 < num_cpus < 0:
                 num_cpus_final = int((1 + num_cpus) * max_cpus)
             else:
-                num_cpus = int(num_cpus)
                 num_cpus_final = int(num_cpus)
         elif isinstance(num_cpus, int):
             if num_cpus <= 0:
@@ -149,6 +190,9 @@ class Parallel:
         if self._log is not None:
             return self._log
 
+        if log is not None:
+            return log
+
         logger = log or logging.getLogger(self.__class__.__name__)
         logger.setLevel(logging.INFO)
         logger.propagate = False
@@ -164,28 +208,54 @@ class Parallel:
 
     def configure(
         self,
-        num_cpus: int | None = None,
+        num_cpus: float | None = None,
         engine: Engine | str | None = None,
         log: logging.Logger | None = None,
         **kwargs: Any,
     ) -> int:
-        """Configure the execution engine for this runtime instance."""
-        self._log = self._get_logger(log)
+        """Configure this runtime and initialize its selected backend.
 
+        Args:
+            num_cpus: CPU count or relative CPU fraction to use.
+            engine: Execution engine to configure.
+            log: Optional logger for runtime messages.
+            **kwargs: Backend-specific configuration options.
+
+        Returns:
+            The number of CPUs available to this runtime.
+
+        Raises:
+            TypeError: If ``engine`` is not an engine member or string.
+            ValueError: If ``engine`` does not name a supported engine.
+        """
+        self._log = log or self._get_logger(log)
+        if self._debug_mode:
+            self._log.setLevel(logging.DEBUG)
+            engine = Engine.NONE
+            self._log.debug("Debug mode enabled.")
         if engine is not None:
             engine = Engine.parse(engine)
         else:
             engine = Engine.NONE
 
-        if self._initializations > 0:
-            self._log.warning(
-                f"Parallel engine already initialized ({self._num_cpus} CPUs available with {self._parallel_engine.value} engine)."
+        _num_cpus = self._get_num_cpus(num_cpus)
+        _new_configuration = False
+        if _num_cpus != self._num_cpus or engine != self._parallel_engine:
+            _new_configuration = True
+            self._log.debug(
+                "Trying to configure the parallel runtime with engine: %s and num_cpus: %s.", engine, _num_cpus
             )
+
+        if self._initializations > 0:
+            if _new_configuration:
+                self._log.warning(
+                    f"Parallel engine already initialized ({self._num_cpus} CPUs available with {self._parallel_engine.value} engine)."
+                )
             self._initializations += 1
             self._initialzations = self._initializations
             return self._num_cpus
 
-        self._num_cpus = self._get_num_cpus(num_cpus)
+        self._num_cpus = _num_cpus
         self._initializations += 1
         self._initialzations = self._initializations
 
@@ -197,10 +267,10 @@ class Parallel:
                 os.environ["RAY_COLOR_PREFIX"] = "1"
             except ImportError:
                 pass
-            if importlib.util.find_spec("ray") is None:
+            if importlib.util.find_spec("ray") is None:  # type: ignore
                 self._log.warning("Ray is not installed. Please install it using 'pip install ray'")
                 engine = Engine.MULTITHREADING
-                self._log.warning("Switching to multi-threaded mode.")
+                self._log.warning("Switching to multi-threaded mode")
 
         if engine in (Engine.DASK, Engine.DASK_MULTITHREADING):
             try:
@@ -208,18 +278,18 @@ class Parallel:
                 from dask.distributed import Client  # pyright: ignore[reportMissingImports]
             except ImportError:
                 pass
-            if importlib.util.find_spec("dask") is None:
+            if importlib.util.find_spec("dask") is None:  # type: ignore
                 self._log.warning("Dask is not installed. Please install it using 'pip install dask'")
                 engine = Engine.MULTITHREADING
-                self._log.warning("Switching to multi-threaded mode.")
+                self._log.warning("Switching to multi-threaded mode")
 
         if engine == Engine.JOBLIB:
             try:
-                import joblib
+                import joblib  # pyright: ignore[reportMissingImports]
             except ImportError:
                 self._log.warning("Joblib is not installed. Please install it using 'pip install joblib'")
                 engine = Engine.MULTITHREADING
-                self._log.warning("Switching to multi-threaded mode.")
+                self._log.warning("Switching to multi-threaded mode")
 
         self._parallel_engine = engine
 
@@ -228,7 +298,7 @@ class Parallel:
             return self._num_cpus
 
         if self._parallel_engine == Engine.RAY and self._num_cpus > 1:
-            if importlib.util.find_spec("ray") is None:
+            if importlib.util.find_spec("ray") is None:  # pyright: ignore[reportAttributeAccessIssue]
                 raise ImportError("Ray is not installed. Please install it using 'pip install ray'")
             if not self._ray_initialized:
                 try:
@@ -247,6 +317,9 @@ class Parallel:
                         self._ray_initialized = True
                         self._initialized = True
                         _ray_runtime_users += 1
+                        self._log.debug(
+                            "Parallel initialized with engine %s and %d CPUs.", self._parallel_engine, self._num_cpus
+                        )
                         return self._num_cpus
 
                     kwargs["ignore_reinit_error"] = True
@@ -269,14 +342,17 @@ class Parallel:
                 except Exception:
                     self._parallel_engine = Engine.MULTITHREADING
                     self._log.error("Error during ray initialization.", exc_info=True)
-                    self._log.warning("Ray is not initialized. Switching to multi-threaded mode.")
+                    self._log.warning("Ray is not initialized. Switching to multi-threaded mode")
                     self._ray_initialized = False
                     self._initialized = False
+                self._log.info(
+                    "Parallel initialized with engine %s and %d CPUs.", self._parallel_engine, self._num_cpus
+                )
                 return self._num_cpus
-            return ray.available_resources()["CPU"]
+            return ray.available_resources()["CPU"]  # pyright: ignore[reportPossiblyUnboundVariable]
 
         if self._parallel_engine == Engine.DASK and self._num_cpus > 1:
-            if importlib.util.find_spec("dask") is None:
+            if importlib.util.find_spec("dask") is None:  # pyright: ignore[reportAttributeAccessIssue]
                 raise ImportError("Dask is not installed. Please install it using 'pip install dask'")
             if not self._dask_initialized:
                 try:
@@ -299,14 +375,17 @@ class Parallel:
                 except Exception:
                     self._parallel_engine = Engine.MULTITHREADING
                     self._log.error("Error during dask initialization.", exc_info=True)
-                    self._log.warning("Dask is not initialized. Switching to multi-threaded mode.")
+                    self._log.warning("Dask is not initialized. Switching to multi-threaded mode")
                     self._dask_initialized = False
                     self._initialized = False
+                self._log.info(
+                    "Parallel initialized with engine %s and %d CPUs.", self._parallel_engine, self._num_cpus
+                )
                 return self._num_cpus
-            return len(self._dask_client.nthreads())
+            return len(self._dask_client.nthreads())  # pyright: ignore[reportOptionalMemberAccess]
 
         if self._parallel_engine == Engine.DASK_MULTITHREADING and self._num_cpus > 1:
-            if importlib.util.find_spec("dask") is None:
+            if importlib.util.find_spec("dask") is None:  # pyright: ignore[reportAttributeAccessIssue]
                 raise ImportError("Dask is not installed. Please install it using 'pip install dask'")
             if not self._dask_initialized:
                 try:
@@ -322,43 +401,54 @@ class Parallel:
                 except Exception:
                     self._parallel_engine = Engine.MULTITHREADING
                     self._log.error("Error during dask initialization.", exc_info=True)
-                    self._log.warning("Dask is not initialized. Switching to multi-threaded mode.")
+                    self._log.warning("Dask is not initialized. Switching to multi-threaded mode")
                     self._dask_initialized = False
                     self._initialized = False
+                self._log.info(
+                    "Parallel initialized with engine %s and %d CPUs.", self._parallel_engine, self._num_cpus
+                )
                 return self._num_cpus
-            return len(self._dask_client.nthreads())
+            return len(self._dask_client.nthreads())  # pyright: ignore[reportOptionalMemberAccess]
 
         if self._parallel_engine == Engine.MULTITHREADING and self._num_cpus > 1:
             self._initialized = True
+            self._log.info("Parallel initialized with engine %s and %d CPUs.", self._parallel_engine, self._num_cpus)
             return self._num_cpus
 
         if self._parallel_engine == Engine.JOBLIB and self._num_cpus > 1:
             try:
-                import joblib
+                import joblib  # pyright: ignore[reportMissingImports]
 
                 self._joblib_engine = joblib.Parallel(n_jobs=self._num_cpus, backend="loky")
                 self._joblib_initialized = True
                 self._initialized = True
-                return self._num_cpus
             except ImportError:
                 self._parallel_engine = Engine.MULTITHREADING
                 self._log.error("Joblib is not installed. Please install it using 'pip install joblib'")
-                self._log.warning("Switching to multi-threaded mode.")
+                self._log.warning("Switching to multi-threaded mode")
                 self._joblib_initialized = False
                 self._initialized = False
-                return self._num_cpus
+            self._log.info("Parallel initialized with engine %s and %d CPUs.", self._parallel_engine, self._num_cpus)
+            return self._num_cpus
 
         self._num_cpus = 1
-        self._initialized = False
+        self._initialized = True
+        self._log.info("Parallel initialized with engine %s and %d CPUs.", Engine.NONE, self._num_cpus)
         return 1
 
     def shutdown(self, force: bool = False) -> None:
-        """Release the resources owned by this runtime instance."""
+        """Release backend resources owned by this runtime.
+
+        Args:
+            force: Shut down even if the runtime has multiple active
+                initialization references.
+        """
         if self._initializations > 0:
             self._initializations -= 1
             self._initialzations = self._initializations
         if self._initializations > 0 and not force:
-            self._log.warning("Parallel engine not shutdown. Parallel engine is still in use.")
+            if self._log:
+                self._log.warning("Parallel engine not shutdown. Parallel engine is still in use.")
             return
 
         if self._parallel_engine == Engine.RAY and self._ray_initialized:
@@ -367,8 +457,11 @@ class Parallel:
 
                 global _ray_runtime_users
                 _ray_runtime_users = max(0, _ray_runtime_users - 1)
+
                 if _ray_runtime_users == 0 and ray.is_initialized():
                     ray.shutdown()
+                    if self._log:
+                        self._log.info("Ray engine shutdown successfully")
             except Exception:
                 pass
             self._ray_initialized = False
@@ -377,6 +470,8 @@ class Parallel:
             try:
                 if self._dask_client is not None:
                     self._dask_client.close()
+                    if self._log:
+                        self._log.info("Dask engine shutdown successfully")
             except Exception:
                 pass
             self._dask_client = None
@@ -386,6 +481,8 @@ class Parallel:
             try:
                 if self._joblib_engine is not None:
                     self._joblib_engine.close()
+                    if self._log:
+                        self._log.info("Joblib engine shutdown successfully")
             except Exception:
                 pass
             self._joblib_engine = None
@@ -403,12 +500,22 @@ class Parallel:
     @classmethod
     def session(
         cls,
-        num_cpus: int | None = None,
+        num_cpus: float | None = None,
         engine: Engine | str | None = None,
         log: logging.Logger | None = None,
         **kwargs: Any,
     ) -> Parallel:
-        """Construct and return a configured runtime instance for a ``with`` block."""
+        """Create a configured runtime suitable for a ``with`` block.
+
+        Args:
+            num_cpus: CPU count or relative CPU fraction to use.
+            engine: Execution engine to configure.
+            log: Optional logger for runtime messages.
+            **kwargs: Backend-specific configuration options.
+
+        Returns:
+            A configured runtime instance.
+        """
         return cls(num_cpus=num_cpus, engine=engine, log=log, **kwargs)
 
     def map(
@@ -416,114 +523,202 @@ class Parallel:
         fn: Callable[..., Any],
         tasks: Iterable[dict],
         engine: Engine | str | None = None,
-        n_workers: int | None = None,
+        n_workers: float | None = None,
         chunk_size: int | None = None,
         **kwargs: Any,
     ) -> Generator[Any, None, None]:
-        """Run `fn` over chunks of `tasks` using the active execution runtime."""
-        tasks = list(tasks)
+        """Run ``fn`` on task chunks and yield results as chunks complete.
 
-        runtime_engine = Engine.parse(engine) if engine is not None else self._parallel_engine
-        if engine is not None or n_workers is not None:
-            if not self._initialized:
-                self.configure(num_cpus=n_workers, engine=runtime_engine)
+        Args:
+            fn: Callable invoked as ``fn(tasks=chunk, **kwargs)``.
+            tasks: Iterable of task dictionaries.
+            engine: Optional engine override for this call.
+            n_workers: Optional CPU count or relative worker fraction.
+            chunk_size: Number of tasks in each submitted chunk. Defaults to
+                an even division across the selected workers.
+            **kwargs: Additional keyword arguments passed to ``fn``.
 
-        if self._parallel_engine == Engine.NONE and runtime_engine != Engine.NONE:
-            self._parallel_engine = runtime_engine
+        Yields:
+            The result returned by ``fn`` for each completed chunk.
 
-        engine_value = self._parallel_engine if self._parallel_engine != Engine.NONE else runtime_engine
-        if engine_value is None or engine_value == Engine.NONE:
-            n_workers = None
-        if n_workers is not None:
-            num_cpus = self._get_num_min_cpus(n_workers)
-            if num_cpus != self._num_cpus and num_cpus == 1:
-                self._log.warning("n_workers = 1. Using single CPU in a single thread mode.")
-        else:
-            num_cpus = self._num_cpus
+        Raises:
+            ValueError: If ``chunk_size`` is not positive.
+            RuntimeError: If a task fails and ``error_mode`` is ``"raise"``.
+            Exception: If a sequential task fails or recovery itself fails.
+        """
+        if chunk_size is not None and chunk_size <= 0:
+            raise ValueError("chunk_size must be greater than zero")
 
-        chunk_size = int(max(1, len(tasks) // (num_cpus))) if chunk_size is None else chunk_size
-        pair_chunks = [tasks[i : i + chunk_size] for i in range(0, len(tasks), chunk_size)]
+        engine_value = self._parallel_engine
+        num_cpus = self._num_cpus
+        pair_chunks: list[list[dict]] = []
+        tasks_completed: set[int] = set()
+        try:
+            tasks = list(tasks)
+            if self._log is not None:
+                self._log.debug(f"Mapping function {fn.__name__} over {len(tasks)} tasks.")
+            runtime_engine = Engine.parse(engine) if engine is not None else self._parallel_engine
+            if engine is not None or n_workers is not None:
+                if not self._initialized:
+                    self.configure(num_cpus=n_workers, engine=runtime_engine)
 
-        if engine_value == Engine.RAY and num_cpus > 1 and self._ray_initialized:
-            import ray  # pyright: ignore[reportMissingImports]
+            if self._parallel_engine == Engine.NONE and runtime_engine != Engine.NONE:
+                self._parallel_engine = runtime_engine
 
-            ray.util.register_serializer(dict, serializer=Serializer.dumps, deserializer=Serializer.loads)
-            pair_chunks_refs = [ray.put(chunk) for chunk in pair_chunks]
+            engine_value = self._parallel_engine if self._parallel_engine != Engine.NONE else runtime_engine
+            if engine_value is None or engine_value == Engine.NONE:
+                n_workers = None
+            if n_workers is not None:
+                num_cpus = self._get_num_min_cpus(n_workers, max_cpus=self._num_cpus)
+                if num_cpus != self._num_cpus and num_cpus == 1:
+                    if self._log:
+                        self._log.warning("n_workers = 1. Using single CPU in a single thread mode.")
+            else:
+                num_cpus = self._num_cpus
 
-            @ray.remote
-            def calculate(*args: Any, **kwargs: Any) -> Any:
-                """Invoke `fn` for a single chunk of tasks on a Ray worker."""
-                return fn(*args, **kwargs)
+            chunk_size = int(max(1, len(tasks) // (num_cpus))) if chunk_size is None else chunk_size
+            pair_chunks = [tasks[i : i + chunk_size] for i in range(0, len(tasks), chunk_size)]
+            if engine_value == Engine.RAY and num_cpus > 1 and self._ray_initialized:
+                import ray  # pyright: ignore[reportMissingImports]
 
-            ref_kwargs: dict[str, Any] = {}
-            for key, value in kwargs.items():
-                if isinstance(value, (float, int, str, bool, complex)):
-                    ref_kwargs[key] = value
-                else:
-                    ref_kwargs[key] = ray.put(value)
+                ray.util.register_serializer(dict, serializer=Serializer.dumps, deserializer=Serializer.loads)
+                pair_chunks_refs = [ray.put(chunk) for chunk in pair_chunks]
 
-            self._log.debug(f"Run task on engine Ray with {num_cpus} workers.")
-            result_ids: list[Any] = [calculate.remote(tasks=chunk_ref, **ref_kwargs) for chunk_ref in pair_chunks_refs]
+                @ray.remote
+                def calculate(*args: Any, **kwargs: Any) -> Any:  # pyright: ignore[reportRedeclaration]
+                    """Invoke `fn` for a single chunk of tasks on a Ray worker."""
+                    id_task = kwargs.pop("id_task")
+                    return id_task, fn(*args, **kwargs)
 
-            while result_ids:
-                done_ids, result_ids = ray.wait(result_ids)
-                for done_id in done_ids:
-                    yield ray.get(done_id)
+                ref_kwargs: dict[str, Any] = {}
+                for key, value in kwargs.items():
+                    if isinstance(value, (float, int, str, bool, complex)):
+                        ref_kwargs[key] = value
+                    else:
+                        ref_kwargs[key] = ray.put(value)
 
-        elif engine_value in [Engine.DASK, Engine.DASK_MULTITHREADING] and num_cpus > 1 and self._dask_initialized:
-            import dask  # pyright: ignore[reportMissingImports]
+                if self._log:
+                    self._log.debug(f"Run task on engine Ray with {num_cpus} workers.")
+                result_ids: list[Any] = [
+                    calculate.remote(tasks=chunk_ref, id_task=i, **ref_kwargs)
+                    for i, chunk_ref in enumerate(pair_chunks_refs)
+                ]  # pyright: ignore[reportCallIssue, reportFunctionMemberAccess]
 
-            @dask.delayed
-            def calculate(*args: Any, **kwargs: Any) -> Any:
-                """Invoke `fn` for a single chunk of tasks on a Dask worker."""
-                return fn(*args, **kwargs)
+                while result_ids:
+                    done_ids, result_ids = ray.wait(result_ids)
+                    for done_id in done_ids:
+                        id_task, result = ray.get(done_id)
+                        tasks_completed.add(id_task)
+                        yield result
 
-            self._log.debug(f"Run task on engine Dask with {num_cpus} workers.")
-            delayed_results = [calculate(tasks=chunk, **kwargs) for chunk in pair_chunks]
-            results: tuple[Any, ...] = dask.compute(*delayed_results, scheduler="processes")
-            for value in results:
-                yield value
+            elif engine_value in [Engine.DASK, Engine.DASK_MULTITHREADING] and num_cpus > 1 and self._dask_initialized:
+                import dask  # pyright: ignore[reportMissingImports]
 
-        elif engine_value == Engine.MULTITHREADING and num_cpus > 1:
+                @dask.delayed  # pyright: ignore[reportPrivateImportUsage]
+                def calculate(*args: Any, **kwargs: Any) -> Any:  # pyright: ignore[reportRedeclaration]
+                    """Invoke `fn` for a single chunk of tasks on a Dask worker."""
+                    id_task = kwargs.pop("id_task")
+                    return id_task, fn(*args, **kwargs)
 
-            def calculate(*args: Any, **kwargs: Any) -> Any:
-                """Invoke `fn` for a single chunk of tasks on a worker thread."""
-                return fn(*args, **kwargs)
+                if self._log:
+                    self._log.debug(f"Run task on engine Dask with {num_cpus} workers.")
+                delayed_results = [calculate(tasks=chunk, id_task=i, **kwargs) for i, chunk in enumerate(pair_chunks)]
+                results_tuple: tuple[Any, ...] = dask.compute(*delayed_results, scheduler="processes")  # pyright: ignore[reportPrivateImportUsage]
+                for id_task, value in results_tuple:
+                    tasks_completed.add(id_task)
+                    yield value
 
-            self._log.debug(f"Run task on engine Multithreading with {num_cpus} workers.")
-            with ThreadPoolExecutor(max_workers=num_cpus) as executor:
-                futures: dict[Future[Any], list[dict]] = {
-                    executor.submit(calculate, tasks=chunk, **kwargs): chunk for chunk in pair_chunks
-                }
-                for future in as_completed(futures):
-                    yield future.result()
+            elif engine_value == Engine.MULTITHREADING and num_cpus > 1:
 
-        elif engine_value == Engine.JOBLIB and num_cpus > 1:
-            import joblib
+                def calculate(*args: Any, **kwargs: Any) -> Any:
+                    """Invoke `fn` for a single chunk of tasks on a worker thread."""
+                    id_task = kwargs.pop("id_task")
+                    return id_task, fn(*args, **kwargs)
 
-            def calculate(*args: Any, **kwargs: Any) -> Any:
-                """Invoke `fn` for a single chunk of tasks on a joblib worker."""
-                return fn(*args, **kwargs)
+                if self._log:
+                    self._log.debug(f"Run task on engine Multithreading with {num_cpus} workers.")
+                with ThreadPoolExecutor(max_workers=num_cpus) as executor:
+                    futures: dict[Future[Any], list[dict]] = {
+                        executor.submit(calculate, tasks=chunk, id_task=i, **kwargs): i
+                        for i, chunk in enumerate(pair_chunks)
+                    }
+                    for future in as_completed(futures):
+                        id_task, result = future.result()
+                        tasks_completed.add(id_task)
+                        yield result
 
-            self._log.debug(f"Run task on engine Joblib with {num_cpus} workers.")
-            results: Any = self._joblib_engine(
-                joblib.delayed(calculate)(tasks=chunk, **kwargs) for chunk in pair_chunks
-            )
-            for value in results:
-                yield value
-        else:
-            yield fn(tasks=tasks, **kwargs)
+            elif engine_value == Engine.JOBLIB and num_cpus > 1:
+                import joblib  # pyright: ignore[reportMissingImports]
+
+                def calculate(*args: Any, **kwargs: Any) -> Any:
+                    """Invoke `fn` for a single chunk of tasks on a joblib worker."""
+                    id_task = kwargs.pop("id_task")
+                    return id_task, fn(*args, **kwargs)
+
+                if self._log:
+                    self._log.debug(f"Run task on engine Joblib with {num_cpus} workers.")
+                results: Any = self._joblib_engine(
+                    joblib.delayed(calculate)(tasks=chunk, id_task=i, **kwargs) for i, chunk in enumerate(pair_chunks)
+                )
+                for id_task, value in results:
+                    tasks_completed.add(id_task)
+                    yield value
+            else:
+                yield fn(tasks=tasks, **kwargs)
+        except Exception as e:
+            if self._log:
+                self._log.error(f"Error occurred: {e}")
+            if self._log:
+                self._log.error(f"Error occurred while running task on engine {engine_value}: {e}")
+            if self._error_mode == "raise":
+                raise RuntimeError(f"Error occurred while running task on engine {engine_value}: {e}") from e
+            if self._error_mode == "ignore":
+                return
+            if not self._recovering and engine_value != Engine.NONE and num_cpus > 1:
+                recover_tasks = []
+                for i, chunk in enumerate(pair_chunks):
+                    if i not in tasks_completed:
+                        recover_tasks.extend(chunk)
+
+                if self._log:
+                    self._log.info(f"Recovering {len(recover_tasks)} tasks for re-execution without parallelism")
+                self._recovering = True
+                try:
+                    yield from self.map(
+                        fn,
+                        tasks=recover_tasks,
+                        engine=Engine.NONE,
+                        n_workers=1,
+                        chunk_size=chunk_size,
+                        **kwargs,
+                    )
+                finally:
+                    self._recovering = False
+            else:
+                raise
 
     def map_list(
         self,
         fn: Callable[..., Any],
         tasks: Iterable[dict],
         engine: Engine | str | None = None,
-        n_workers: int | None = None,
+        n_workers: float | None = None,
         chunk_size: int | None = None,
         **kwargs: Any,
     ) -> list[Any]:
-        """Run `fn` over chunks of `tasks` and return all results as a flat list."""
+        """Run ``fn`` over chunks and return a flat list of all results.
+
+        Args:
+            fn: Callable invoked for each task chunk.
+            tasks: Iterable of task dictionaries.
+            engine: Optional engine override for this call.
+            n_workers: Optional CPU count or relative worker fraction.
+            chunk_size: Number of tasks in each submitted chunk.
+            **kwargs: Additional keyword arguments passed to ``fn``.
+
+        Returns:
+            All chunk results, flattening list-valued results by one level.
+        """
         results: list[Any] = []
         for chunk_result in self.map(
             fn=fn,
@@ -546,41 +741,15 @@ class Parallel:
         engine: Engine | str | None = None,
         **kwargs: Any,
     ) -> Generator[Any, None, None]:
-        """Run `fn` once with a single task built from `params`."""
+        """Run ``fn`` once with a single task payload.
+
+        Args:
+            fn: Callable invoked with the single task.
+            params: Task dictionary passed to ``fn``.
+            engine: Optional engine override for this call.
+            **kwargs: Additional keyword arguments passed to ``fn``.
+
+        Returns:
+            A generator yielding the function result.
+        """
         return self.map(fn, [params], engine=engine, n_workers=None, chunk_size=1, **kwargs)
-
-    def execute(
-        self,
-        fn: Callable[..., Any],
-        tasks: Iterable[dict],
-        engine: Engine | str | None = None,
-        n_workers: int | None = None,
-        chunk_size: int | None = None,
-        **kwargs: Any,
-    ) -> Generator[Any, None, None]:
-        """Alias for `map` retained for convenience."""
-        return self.map(fn, tasks, engine=engine, n_workers=n_workers, chunk_size=chunk_size, **kwargs)
-
-    def initialize_parallel(
-        self,
-        num_cpus: int | None = None,
-        engine: Engine | str | None = None,
-        log: logging.Logger | None = None,
-        **kwargs: Any,
-    ) -> int:
-        """Alias for `configure` retained for convenience."""
-        return self.configure(num_cpus=num_cpus, engine=engine, log=log, **kwargs)
-
-    def shutdown_parallel(self, force: bool = False) -> None:
-        """Alias for `shutdown` retained for convenience."""
-        self.shutdown(force=force)
-
-    def run(
-        self,
-        fn: Callable[..., Any],
-        params: dict,
-        engine: Engine | str | None = None,
-        **kwargs: Any,
-    ) -> Generator[Any, None, None]:
-        """Apply `fn` to a single payload and return the single chunk result."""
-        return self.apply(fn, params, engine=engine, **kwargs)

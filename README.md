@@ -74,7 +74,7 @@ Each `Parallel` instance owns its engine state and supports the following
 engines, selected via the `engine` argument of the constructor, `configure(...)`
 or `map(...)`:
 
-- `Engine.NONE` - sequential execution (default with a single CPU).
+- `Engine.NONE` - sequential execution (default when no engine is selected).
 - `Engine.MULTITHREADING` - `concurrent.futures.ThreadPoolExecutor`.
 - `Engine.JOBLIB` - `joblib.Parallel` with the `loky` backend
   (requires the `joblib` extra).
@@ -89,8 +89,9 @@ If an engine's dependency is missing, `Parallel` falls back to
 
 ## API Overview
 
-- `Parallel(num_cpus=None, engine=None, log=None, **kwargs)` creates and
-  configures an independent runtime instance.
+- `Parallel(num_cpus=None, engine=None, log=None, debug_mode=False,
+  error_mode="recover", **kwargs)` creates and configures an independent
+  runtime instance.
 - `Parallel.configure(num_cpus=None, engine=None, log=None, **kwargs)`
   configures that instance and returns the number of usable CPUs.
 - `Parallel.map(fn, tasks, engine=None, n_workers=None, chunk_size=None, **kwargs)`
@@ -103,3 +104,9 @@ If an engine's dependency is missing, `Parallel` falls back to
   `with` block.
 - `Parallel.shutdown(force=False)` releases the resources owned by that
   instance.
+
+`debug_mode=True` forces sequential execution and debug logging.
+`error_mode` controls task failures: `"raise"` raises a `RuntimeError`,
+`"ignore"` skips failed work, and the default `"recover"` retries unfinished
+parallel chunks sequentially. The legacy engine string `"threading"` remains
+the canonical value for `Engine.MULTITHREADING`.
